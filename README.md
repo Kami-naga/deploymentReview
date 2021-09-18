@@ -40,6 +40,7 @@ Install the dependency & run
 - delete the image: `docker rmi yyy`
 - `docker run yyy bash`
   - `-it` interation mode
+  - `-d` run in background
   - `--name aaa` give a name: aaa
   - `-p` port mapping host:container(if several ports need to be exposed, use several -p)
   - `-v` dir mapping host:container
@@ -50,4 +51,61 @@ Install the dependency & run
 - `docker unpause aaa`
 - `docker stop aaa`
 - the container can be deleted by `docker rm aaa` after you stopped it.
+- if have any problem when running, use `docker logs aaa` to see the logs
+## Create the MySQL cluster
+2 kinds of cluster: replication & pxc
 
+Since the data is somewhat important, so use pxc to ensure strong consistency.
+
+*replication way can see `https://blog.csdn.net/gu_wen_jie/article/details/102721524`
+
+Get the cluster image with name "pxc" by following cmds:
+  - `docker pull percona/percona-xtradb-cluster:5.7.21`
+  - `docker tag percona/percona-xtradb-cluster:5.7.21 pxc`
+  - `docker rmi percona/percona-xtradb-cluster:5.7.21`
+
+For safety reasons, we need to create a Docker internal network for pxc cluster instances, like
+- `docker network create --subnet=172.18.0.0/24 net1`
+- `docker network inspect net1`
+- `docker network rm net1`
+- `docker network ls`
+
+For data saving, PXC can not use bind mount, so it needs a docker volume
+  - bind mount is not portable across different host systems(This is why bind mount cannot appear in a Dockerfile)
+  - first create a volume: `docker volume create --name v1`
+  - `docker vulume ls`
+  - `docker inspect v1`
+  - `docker volume rm v1`
+  - then map the volume to a container
+
+Use the following cmd to create pxc container
+
+first one:
+
+`docker run -d -p 3306:3306 -v v1(docker volume name):/var/lib/mysql --privileged --name=node1 --net=net1 --ip 172.18.0.2 -e MYSQL_ROOT_PASSWORD=xxxx -e CLUSTER_NAME=PXC -e XTRABACKUP_PASSWORD=xxxx pxc`
+
+others: 
+port,volume,name,ip should be changed & add `-e CLUSTER_JOIN=node1`
+
+e.g.  `docker run -d -p 3307:3306 -v v2:/var/lib/mysql --privileged --name=node2 --net=net1 --ip 172.18.0.3 -e MYSQL_ROOT_PASSWORD=xxxx -e CLUSTER_NAME=PXC -e XTRABACKUP_PASSWORD=xxxx -e CLUSTER_JOIN=node1 pxc`
+
+*Since the support for TLSv1 & TLSv1.1 was dropped, when connecting to those dbs, we need to add `?enabledTLSProtocols=TLSv1.2` at the end of the URL.
+
+*if you use DataGrip to monitor the database status, you should go to properties->schema and tick all schemas , then you can see all schemas' changes.(you can only see the the schema you ticked in the database)
+
+## Database load balancing
+Use Haproxy
+- `docker pull haproxy`
+
+See `https://www.percona.com/doc/percona-xtradb-cluster/LATEST/howtos/haproxy.html` to learn how to configure the haproxy
+- admin -> 8888 (user:admin, pw:123)
+- create an account without permissions(name can be haproxy, no pw) in each mySQL to get the heartbeat 
+  - `CREATE USER 'haproxy'@'%' IDENTIFIED BY '';`
+
+create container
+- `docker run -itd -p 4001:8888 -p 4002:3306 -v /home/soft/haproxy:/usr/local/etc/haproxy --name h1 --privileged --net=net1 haproxy bash`
+
+then get into the container and apply the cfg file
+- `docker exec -it -u root h1 bash`
+  - cmd below needs permission so get into the container as the root user
+- `haproxy -f /usr/local/etc/haproxy/haproxy.cfg`
