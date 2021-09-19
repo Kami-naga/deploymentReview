@@ -52,7 +52,7 @@ Install the dependency & run
 - `docker stop aaa`
 - the container can be deleted by `docker rm aaa` after you stopped it.
 - if have any problem when running, use `docker logs aaa` to see the logs
-## Create the MySQL cluster
+## Create MySQL cluster
 2 kinds of cluster: replication & pxc
 
 Since the data is somewhat important, so use pxc to ensure strong consistency.
@@ -74,7 +74,7 @@ For data saving, PXC can not use bind mount, so it needs a docker volume
   - bind mount is not portable across different host systems(This is why bind mount cannot appear in a Dockerfile)
   - first create a volume: `docker volume create --name v1`
   - `docker vulume ls`
-  - `docker inspect v1`
+  - we can use cmd `docker inspect v1` to know the path(mountpoint) of the volume
   - `docker volume rm v1`
   - then map the volume to a container
 
@@ -93,6 +93,10 @@ e.g.  `docker run -d -p 3307:3306 -v v2:/var/lib/mysql --privileged --name=node2
 
 *if you use DataGrip to monitor the database status, you should go to properties->schema and tick all schemas , then you can see all schemas' changes.(you can only see the the schema you ticked in the database)
 
+*suspend(not shut down) the virtual machine to ensure that the container runs properly when it is started again. However, after the suspension, the docker container will not be able to gain access to the network when the virtual machine resumes , so you need to change the configuration
+- `vim /etc/sysctl.conf`
+- add `net.ipv4.ip_forward=1`
+- `sudo service network-manager restart` (CentOS7.x- :`systemctl restart network`)
 ## Database load balancing
 Use Haproxy
 - `docker pull haproxy`
@@ -109,3 +113,85 @@ then get into the container and apply the cfg file
 - `docker exec -it -u root h1 bash`
   - cmd below needs permission so get into the container as the root user
 - `haproxy -f /usr/local/etc/haproxy/haproxy.cfg`
+
+High Availability
+
+Use keepalived to implement dual-system.
+
+See `https://access.redhat.com/documentation/ja-jp/red_hat_enterprise_linux/7/html/load_balancer_administration/ch-initial-setup-vsa`
+- instance
+  - install keepalived in haproxy container
+    - `docker exec -it -u root h1 bash`
+    - `apt-get update`
+    - `apt-get install keepalived`
+  - configure keepalived
+    -  configure keepalived.conf 
+    - add keppalived config file to bind mount
+      - so the docker run cmd changed:
+        - `docker run -itd -p 4001:8888 -p 4002:3306 -v /home/soft/h1/haproxy:/usr/local/etc/haproxy -v /home/soft/h1/keepalived:/etc/keepalived --name h1 --privileged --net=net1 haproxy bash`
+  - `service keepalived start`
+    - check by cmd: 
+      - `ping 172.18.0.201(the virtual IP you wrote in the conf file)`
+
+  - get another haproxy+keepalived container
+    - `docker run -itd -p 4003:8888 -p 4004:3306 -v /home/soft/h2/haproxy:/usr/local/etc/haproxy -v /home/soft/h2/keepalived:/etc/keepalived --name h2 --privileged --net=net1 haproxy bash`
+    - ...
+- server
+  - `apt-get update`
+  - `apt-get install keepalived`
+  - configure keepalived.conf(put it in path: /etc/keepalived)
+  - `service keepalived start`
+
+## Implement hot backup
+- cold backup 
+  - mysqldump or just copy the data file of mysql
+- hot backup
+  - LVM(linux backup approach, all db ok)
+    - read only & can not write
+  - XtraBackup(mysql)
+    - no lock!
+    - do not interrupt the transaction
+    - compressed
+
+- full backup
+- incremental backup
+- differential backup
+
+XtraBackup uses full + incremental
+
+- first create backup volume
+  - `docker volume create backup`
+- then stop & delete one of the db nodes(here delete node1)
+- start it with backup
+  - `docker run -d -p 3306:3306 -v v1:/var/lib/mysql -v backup:/data --privileged --name=node1 --net=net1 --ip 172.18.0.2 -e MYSQL_ROOT_PASSWORD=xxxx -e CLUSTER_NAME=PXC -e XTRABACKUP_PASSWORD=xxxx -e CLUSTER_JOIN=node2 pxc`
+- `docker exec -it -u root node1 bash`
+- `apt-get update`
+- `apt-get install percona-xtrabackup-24`
+- do full backup: `innobackupex --user=root --password=xxxx /data/backup/full`
+- we can see the path of the backup file is in`/data/backup/full/2021-09-19_17-13-38/`
+- how to restore?
+  - we can only cold restore, no hot restore(we can not write new data while restoring data)
+  - for pxc cluster, it's a bit more complicated
+    - other nodes do not know how to sync data with the restored node
+    - we have to dissolve the cluster and then restore the node data(rollback the uncommitted transaction before restoration), then let other nodes join the new cluster to sync the data
+      - `docker stop node2,3...` & `docker rm node2,3...`
+      - delete all data: `rm -rf /var/lib/mysql/*`
+      - rollback transaction: `innobackupex --user=root --password=xxxx --apply-back /data/backup/full/2021-09-19_17-13-38/`
+      - restore: `innobackupex --user=root --password=xxxx --copy-back  /data/backup/full/2021-09-19_17-13-38/`
+
+## Create Redis cluster
+- `docker network create --subnet=172.19.0.0/16 net2`
+- `docker pull redis`
+- `docker run -itd --name r1 -p 5001:6379 --net=net2 --ip 172.19.0.2 redis bash`
+- `docker run -it -d --name r2 -p 5002:6379 --net=net2 --ip 172.19.0.3 redis bash`
+- ...(6 redis = 3x(master+slave))
+- `docker exec -it -u root r1 bash`
+- modify the configuration to fit the cluster(`/usr/redis/redis.conf`)
+  - `daemonize yes` -> to background
+  - `cluster-enabled yes` -> cluster mode on
+  - `cluster-config-file nodes.conf` -> cluster configuration file
+  - `cluster-node-timeout 15000`
+  - `appendonly yes` -> change the persistence mode to AOF mode
+   - 2 modes (AOF & RDB(default))
+    - RDB: high efficiency but low reliability 
+    - AOF: high reliability but low efficiency
