@@ -180,8 +180,9 @@ XtraBackup uses full + incremental
       - restore: `innobackupex --user=root --password=xxxx --copy-back  /data/backup/full/2021-09-19_17-13-38/`
 
 ## Create Redis cluster
+- See `https://redis.io/topics/cluster-tutorial`
 - `docker network create --subnet=172.19.0.0/16 net2`
-- `docker pull redis`
+- `docker pull redis`(`docker pull yyyyttttwwww/redis` which has its config file modified)
 - `docker run -itd --name r1 -p 5001:6379 --net=net2 --ip 172.19.0.2 redis bash`
 - `docker run -it -d --name r2 -p 5002:6379 --net=net2 --ip 172.19.0.3 redis bash`
 - ...(6 redis = 3x(master+slave))
@@ -195,3 +196,21 @@ XtraBackup uses full + incremental
    - 2 modes (AOF & RDB(default))
     - RDB: high efficiency but low reliability 
     - AOF: high reliability but low efficiency
+- `cd /usr/redis/src`
+- `./redis-server ../redis.conf`
+- do the above things in r2~r6(if you use yyyyttttwwww/redis, only do above 2 line in r2-r6)
+- since the redis version is a bit low, we need a script redis-trib.rb which is in src dir to create cluster(high version can use redis-cli)
+  - `apt-get install ruby`
+  - `apt-get install rubygems`
+  - `gem install redis`
+  - `cd /usr/redis/src`
+  - `mkdir ../cluster`
+  - `cp /usr/redis/src/redis-trib.rb /usr/redis/cluster/`
+  - `cd ../cluster`
+  - `./redis-trib.rb create --replicas 1 172.19.0.2:6379 172.19.0.3:6379 172.19.0.4:6379 172.19.0.5:6379 172.19.0.6:6379 172.19.0.7:6379`
+  - `/usr/redis/src/redis-cli -c` to start a redis client
+    - `set a 10` & `get a 10`
+    - pause one of the redis & see `cluster nodes` in one redis client
+
+## Backend Deployment
+- 
