@@ -72,6 +72,7 @@ For safety reasons, we need to create a Docker internal network for pxc cluster 
 
 For data saving, PXC can not use bind mount, so it needs a docker volume
   - bind mount is not portable across different host systems(This is why bind mount cannot appear in a Dockerfile)
+  - but bind mount can do file mapping which volume cannot do(volume can do dir mapping only)
   - first create a volume: `docker volume create --name v1`
   - `docker vulume ls`
   - we can use cmd `docker inspect v1` to know the path(mountpoint) of the volume
@@ -97,6 +98,7 @@ e.g.  `docker run -d -p 3307:3306 -v v2:/var/lib/mysql --privileged --name=node2
 - `vim /etc/sysctl.conf`
 - add `net.ipv4.ip_forward=1`
 - `sudo service network-manager restart` (CentOS7.x- :`systemctl restart network`)
+- `sudo service keepalived restart`
 ## Database load balancing
 Use Haproxy
 - `docker pull haproxy`
@@ -213,4 +215,35 @@ XtraBackup uses full + incremental
     - pause one of the redis & see `cluster nodes` in one redis client
 
 ## Backend Deployment
-- 
+- create a schema called `renren_fast`
+- execute the script(/db/mysql.sql) to get the table(through datagrip) 
+- change the ip address of mysql in application-dev.yml & application-prod.yml
+- change the config in application.yml
+  - configure redis cluster
+    - comment out the host, port & password
+    - add  `cluster:nodes:- 172.19.0.2:6379- 172.19.0.3:6379- 172.19.0.4:6379 - 172.19.0.5:6379 - 172.19.0.6:6379 - 172.19.0.7:6379`
+  - change the port of tomcat: 8080 -> 6001
+    - nodes in different docker net can not access each other, how can the backend node get access to mysql(net1) & redis(net2)?
+      - let backend node use the host's net & change make each backend have different port number(6001, 6002...)
+- get jar file of the backend(2 times)
+  - change server port & `mvn clean install -Dmaven.test.skip=true`
+- `docker volume create j1` & `docker volume create j2` &upload jar pack by XFTP
+- `docker run -itd --name j1 -v j1:/home/soft --net=host java:8` & `docker run -itd --name j2 -v j2:/home/soft --net=host java:8`
+- `docker exec -it j1 bash`
+- `nohup java -jar /home/soft/renren-fast.jar`
+
+Use Nginx to do load balancing
+- `docker pull nginx`
+- core part of the configuration can see `https://www.nginx.com/resources/wiki/start/topics/examples/loadbalanceexample/`
+- configure keepalived
+- `docker run -itd --name n1 -v /home/soft/blb-n1/nginx/nginx.conf:/etc/nginx/nginx.conf -v /home/soft/blb-n1/keepalived:/etc/keepalived --net=host --privileged nginx bash`
+- `docker exec -it -u root n1 bash`
+- `apt-get update`
+- `apt-get install keepalived`
+- `service nginx start`
+- `service keepalived start`
+  - check it by ping at the host machine
+- get the second nginx for backend load balancing
+- now 2 backends & 2 nginx all get better availability
+
+## Frontend Deployment
